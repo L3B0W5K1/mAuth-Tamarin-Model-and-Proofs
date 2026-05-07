@@ -40,6 +40,7 @@ rule Setup_AA_Enclave[role="AA"]:
     --[ Secret_AAKey(~aa_sk) ]->
     [ !AA_Ltk(~aa_sk),
       !PkAA(pk(~aa_sk)) ]
+
 rule Setup_AS_rpId[role="AS"]:
     [ Fr(~rpId) ]
     --[ AS_rpId_Registered(~rpId) ]->
@@ -167,7 +168,6 @@ rule Backend_SendAuthzReq_ToAS_Step9[role="Backend"]:
         <'step9_b2as', ClientID, nonce, Device_Info, platformAttest, clientAttestJWT,
          dpopp, pkC, DPoP_Params, dpop_jkt>) ]
 
-// !PkAA is now arity-1 (global key).
 rule AS_VerifyJWTAndDPoPP_ToBackend_Step10[role="AS"]:
     [ In_S($Backend, $AS, <'step9_b2as', ClientID, nonce, Device_Info, platformAttest, clientAttestJWT, dpopp, pkC, DPoP_Params, dpop_jkt>),
       AS_Pending_Challenge_Nonce_Useable(ClientID, nonce, iss),
@@ -449,7 +449,7 @@ restriction unique_attestation_per_nonce:
        ==> #i = #j"
 
 // ============================================================================
-// TYPING (sources) — strengthened
+// SOURCES
 // ============================================================================
 
 lemma typing [sources]:
@@ -500,16 +500,11 @@ lemma client_iss_unique [reuse, use_induction]:
   "All cid iss1 iss2 #i #j.
       Client_Learned_Iss(cid, iss1) @ #i
     & Client_Learned_Iss(cid, iss2) @ #j
-    ==> iss1 = iss2 & #i = #j"
-/*
-lemma accept_implies_hardware [reuse]:
-  all-traces
-  "All cid pkC #i. AS_Accepted_Client_Key(cid, pkC) @ #i
-   ==> (Ex #j. Client_Key_In_Hardware(pkC) @ #j & #j < #i)
-       | (Ex aa_sk #r. RevealAA(aa_sk) @ #r)
-       | (Ex skC #r. RevealClientKey(cid, skC) @ #r)"
-*/
-//unique    
+    ==> iss1 = iss2 & #i = #j" 
+
+// ============================================================================
+// UNIQUE PROOFS
+// ============================================================================
 
 lemma L_unique_dpopp_proof:
     all-traces
@@ -532,7 +527,6 @@ lemma SANITY_keygen[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key,
    hide_lemma=accept_unique_pkC,
    hide_lemma=client_iss_unique,
@@ -546,7 +540,6 @@ lemma SANITY_token_issued[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key,
    hide_lemma=accept_unique_pkC,
    hide_lemma=client_iss_unique,
@@ -560,7 +553,6 @@ lemma SANITY_dpop_verified[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key,
    hide_lemma=accept_unique_pkC,
    hide_lemma=client_iss_unique,
@@ -574,7 +566,6 @@ lemma SANITY_token_used[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key,
    hide_lemma=accept_unique_pkC,
    hide_lemma=client_iss_unique,
@@ -588,7 +579,6 @@ lemma SANITY_refresh_used[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key,
    hide_lemma=accept_unique_pkC,
    hide_lemma=client_iss_unique,
@@ -602,7 +592,6 @@ lemma SANITY_resource_received[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key,
    hide_lemma=accept_unique_pkC,
    hide_lemma=client_iss_unique,
@@ -616,7 +605,6 @@ lemma SANITY_full_chain[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key,
    hide_lemma=accept_unique_pkC,
    hide_lemma=client_iss_unique,
@@ -834,7 +822,7 @@ lemma B7_dpop_jkt_matches_instance_key:
            | (Ex skC #r. RevealClientKey(ClientID, skC) @ #r)"
 
 // ============================================================================
-// K: Key continuity
+// K: KEY CONTINUITY
 // ============================================================================
 
 lemma K1_key_continuity_attestation_to_token:
@@ -914,7 +902,6 @@ lemma E2_resource_matches_issued_token:
 lemma E3_resource_requires_fresh_dpop[hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key]:
     all-traces
     "All data ClientID #i. Client_Recourse_Received(data, ClientID) @ #i
@@ -941,7 +928,6 @@ lemma ISS1_consistency[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key]:
     all-traces
     "All ClientID iss #i.
@@ -952,7 +938,6 @@ lemma ISS2_no_mix_up[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key]:
     all-traces
     "All code ClientID pkC iss1 iss2 #i #j.
@@ -965,7 +950,6 @@ lemma ISS3_token_origin[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key]:
     all-traces
     "All ClientID iss #i. Token_Issued_By_Iss(ClientID, iss) @ #i
@@ -975,7 +959,6 @@ lemma ISS4_client_rejects_wrong_iss[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key]:
     all-traces
     "All ClientID iss_learned iss_verified #i #j.
@@ -988,7 +971,6 @@ lemma ISS5_refresh_preserves_iss[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key]:
     all-traces
     "All ClientID iss_orig token pkC #i #j.
@@ -1000,7 +982,7 @@ lemma ISS5_refresh_preserves_iss[hide_lemma=R2_dpop_requires_creation,
               & #k < #j)"
 
 // ============================================================================
-// FLOW
+// F: AS FLOW
 // ============================================================================
 
 lemma F1_resource_access_requires_token_exchange:
