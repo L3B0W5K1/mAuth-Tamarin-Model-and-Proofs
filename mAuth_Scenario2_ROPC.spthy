@@ -1,4 +1,4 @@
-theory mAuth_Scenario2_ROPC
+theory mAuth_ROPC
 begin
 
 builtins: signing
@@ -431,7 +431,10 @@ restriction unique_attestation_per_nonce:
        & AA_Signed_Attestation(nonce, pkC2) @ #j
        ==> #i = #j"  
 
-//sources
+// ============================================================================
+// SOURCES
+// ============================================================================
+
 
 lemma typing [sources]:
   " (All t cid pk #i #j.
@@ -475,15 +478,10 @@ lemma client_iss_unique [reuse, use_induction]:
       Client_Learned_Iss(cid, iss1) @ #i
     & Client_Learned_Iss(cid, iss2) @ #j
     ==> iss1 = iss2 & #i = #j"
-/*
-lemma accept_implies_hardware [reuse]:
-  all-traces
-  "All cid pkC #i. AS_Accepted_Client_Key(cid, pkC) @ #i
-   ==> (Ex #j. Client_Key_In_Hardware(pkC) @ #j & #j < #i)
-       | (Ex aa_sk #r. RevealAA(aa_sk) @ #r)
-       | (Ex skC #r. RevealClientKey(cid, skC) @ #r)"
-*/
-// Unique
+
+// ============================================================================
+// UNIQUE PROOFS
+// ============================================================================
 
 lemma L_unique_dpopp_proof:
     all-traces
@@ -507,7 +505,6 @@ lemma SANITY_keygen[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key,
    hide_lemma=accept_unique_pkC,
    hide_lemma=client_iss_unique,
@@ -521,7 +518,6 @@ lemma SANITY_token_issued[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key,
    hide_lemma=accept_unique_pkC,
    hide_lemma=client_iss_unique,
@@ -535,7 +531,6 @@ lemma SANITY_dpop_verified[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key,
    hide_lemma=accept_unique_pkC,
    hide_lemma=client_iss_unique,
@@ -549,7 +544,6 @@ lemma SANITY_token_used[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key,
    hide_lemma=accept_unique_pkC,
    hide_lemma=client_iss_unique,
@@ -563,7 +557,6 @@ lemma SANITY_refresh_used[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key,
    hide_lemma=accept_unique_pkC,
    hide_lemma=client_iss_unique,
@@ -577,7 +570,6 @@ lemma SANITY_resource_received[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key,
    hide_lemma=accept_unique_pkC,
    hide_lemma=client_iss_unique,
@@ -591,7 +583,6 @@ lemma SANITY_full_chain[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key,
    hide_lemma=accept_unique_pkC,
    hide_lemma=client_iss_unique,
@@ -813,7 +804,10 @@ lemma B7_dpop_jkt_matches_instance_key:
               & #j < #i)
            | (Ex skC #r. RevealClientKey(ClientID, skC) @ #r)"
 
-// KEY
+// ============================================================================
+// K: KEY CONTINUITY
+// ============================================================================
+
 
 lemma K1_key_continuity_attestation_to_token:
     all-traces
@@ -844,7 +838,7 @@ lemma K3_dpop_key_matches_accepted:
 
 
 // ============================================================================
-// I: CLIENT / DEVICE IDENTITY BINDING
+// I: HARDWARE BOUND KEY CONTINUITY
 // ============================================================================
 
 lemma I1_token_requires_hardware_key [reuse]:
@@ -894,7 +888,6 @@ lemma E2_resource_matches_issued_token:
 lemma E3_resource_requires_fresh_dpop[hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key]:
     all-traces
     "All data ClientID #i. Client_Recourse_Received(data, ClientID) @ #i
@@ -921,7 +914,6 @@ lemma ISS1_consistency[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key]:
     all-traces
     "All ClientID iss #i.
@@ -933,7 +925,6 @@ lemma ISS2_no_mix_up[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key]:
     all-traces
     "All code ClientID pkC iss1 iss2 #i #j.
@@ -947,7 +938,6 @@ lemma ISS3_token_origin[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key]:
     all-traces
     "All ClientID iss #i. Token_Issued_By_Iss(ClientID, iss) @ #i
@@ -957,7 +947,6 @@ lemma ISS4_client_rejects_wrong_iss[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key]:
     all-traces
     "All ClientID iss_learned iss_verified #i #j.
@@ -970,7 +959,6 @@ lemma ISS5_refresh_preserves_iss[hide_lemma=R2_dpop_requires_creation,
    hide_lemma=B1_attestation_unforgeable,
    hide_lemma=B2_as_requires_attestation,
    hide_lemma=B3_token_implies_attestation,
-   hide_lemma=accept_implies_hardware,
    hide_lemma=I1_token_requires_hardware_key]:
     all-traces
     "All ClientID iss_orig token pkC #i #j.
@@ -981,7 +969,10 @@ lemma ISS5_refresh_preserves_iss[hide_lemma=R2_dpop_requires_creation,
               AuthzCode_Issued(code, ClientID, pkC, iss_orig) @ #k
               & #k < #j)"
 
-//FLOW
+// ============================================================================
+// F: AS FLOW
+// ============================================================================
+
 
 lemma F1_resource_access_requires_token_exchange:
     all-traces
@@ -1039,25 +1030,19 @@ lemma ROPC5_ropc_requires_dpop:
      ==> (Ex params pkC #j. DPoP_Verified(params, pkC) @ #j
           & (Ex #k. AS_Accepted_Client_Key(ClientID, pkC) @ #k & #k < #i))"
 
-lemma ROPC6_credentials_dpop_bound:
-    all-traces
-    "All ClientID #i. ROPC_Auth_Success(ClientID) @ #i
-     ==> (Ex params pkC #j. DPoP_Verified(params, pkC) @ #j
-          & (Ex #k. AS_Accepted_Client_Key(ClientID, pkC) @ #k))"
-
-lemma ROPC7_auth_binds_to_attested_client:
+lemma ROPC6_auth_binds_to_attested_client:
     all-traces
     "All ClientID #i. ROPC_Auth_Success(ClientID) @ #i
      ==> (Ex pkC #j. AS_Accepted_Client_Key(ClientID, pkC) @ #j & #j < #i)"
 
-lemma ROPC8_password_not_leaked_by_protocol:
+lemma ROPC7_password_not_leaked_by_protocol:
     all-traces
     "All ClientID pw #i. ROPC_Credentials_Used(ClientID, pw) @ #i
      ==> not (Ex #j. K(pw) @ #j)
          | (Ex #r. RevealPassword(pw) @ #r)
          | (Ex skC #r. RevealClientKey(ClientID, skC) @ #r)"
 
-lemma ROPC9_dpop_params_bind_password_use:
+lemma ROPC8_dpop_params_bind_password_use:
     all-traces
     "All ClientID #i.
        ROPC_Auth_Success(ClientID) @ #i
