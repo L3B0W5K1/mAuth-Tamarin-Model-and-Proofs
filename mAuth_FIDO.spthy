@@ -1,0 +1,1077 @@
+theory mAuth_FIDO
+begin
+
+builtins: signing
+heuristic: S
+
+rule ChanOut_S:
+    [ Out_S($A, $B, x) ]
+    --[ ChanOut_S($A, $B, x) ]->
+    [ Sec($A, $B, x) ]
+
+rule ChanIn_S:
+    [ Sec($A, $B, x) ]
+    --[ ChanIn_S($A, $B, x) ]->
+    [ In_S($A, $B, x) ]
+
+// ============================================================================
+// SETUP RULES (consolidated)
+// ============================================================================
+
+rule Setup_AS_Identity[role="AS"]:
+    [ Fr(~iss) ]
+    -->
+    [ !AS_Identity(~iss) ]
+
+rule Setup_Resource_Server[role="RS"]:
+    [ Fr(~data) ]
+    -->
+    [ !RS_Resource(~data) ]
+
+rule Setup_Backend_Identity[role="Backend"]:
+    [ Fr(~backend_sk) ]
+    --[ Secret_BackendKey(~backend_sk) ]->
+    [ !Backend_Ltk(~backend_sk),
+      !PkBackend(pk(~backend_sk)),
+      !AS_Knows_Backend(pk(~backend_sk)) ]
+
+
+rule Setup_AS_rpId[role="AS"]:
+    [ Fr(~rpId) ]
+    --[ AS_rpId_Registered(~rpId) ]->
+    [ !AS_rpId(~rpId) ]
+
+rule Setup_FIDO_Credential[role="FIDOAuthenticator"]:
+    [ !AS_rpId(rpId),
+      Fr(~ClientID),
+      Fr(~FIDO_sk) ]
+    --[ Secret_FIDOKey(~ClientID, ~FIDO_sk),
+        FIDO_Credential_Registered(~ClientID, pk(~FIDO_sk), rpId) ]->
+    [ !FIDO_Ltk(~ClientID, ~FIDO_sk, rpId),
+      !AS_FIDO_Credential(~ClientID, pk(~FIDO_sk), rpId),
+      ClientReady(~ClientID) ]
+
+// ============================================================================
+// ATTESTATION CHALLENGE (Steps 2-3)
+// ============================================================================
+
+rule Client_AttestChallReq_ToBackend_Step2[role="Client"]:
+    [ ClientReady(ClientID) ]
+    -->
+    [ Out_S($Client, $Backend, <'step2_c2b', ClientID>),
+      Client_KeygenSlot(ClientID) ]
+
+rule Backend_AttestChallReq_ToAS_Step2[role="Backend"]:
+    [ In_S($Client, $Backend, <'step2_c2b', ClientID>) ]
+    -->
+    [ Out_S($Backend, $AS, <'step2_b2as', ClientID>) ]
+
+rule AS_IssueChallenge_ToBackend_Step3[role="AS"]:
+    [ In_S($Backend, $AS, <'step2_b2as', ClientID>),
+      Fr(~nonce),
+      !AS_Identity(iss) ]
+    --[ AS_Issued_Nonce(~nonce),
+        AS_Request_Accepted(<'challenge', ~nonce>) ]->
+    [ Out_S($AS, $Backend, <'step3_as2b', ClientID, ~nonce, iss>),
+      AS_Pending_Challenge_Nonce_Useable(ClientID, ~nonce, iss) ]
+
+rule Backend_IssueChallenge_ToClient_Step3[role="Backend"]:
+    [ In_S($AS, $Backend, <'step3_as2b', ClientID, nonce, iss>) ]
+    -->
+    [ Out_S($Backend, $Client, <'step3_b2c', ClientID, nonce, iss>) ]
+
+// ============================================================================
+// KEY GENERATION & ATTESTATION (Steps 4-7)
+// ============================================================================
+
+rule Client_GenerateKey_ToClient_Step4[role="Client"]:
+    [ In_S($Backend, $Client, <'step3_b2c', ClientID, nonce, iss>),
+      Fr(~skC) ]
+    --[ Secret_ClientKey(ClientID, ~skC),
+        Client_Key_In_Hardware(pk(~skC)),
+        Client_Learned_Iss(ClientID, iss) ]->
+    [ Client_GenerateKey_ToClient_Step4(ClientID, nonce),
+      !Client_Key(ClientID, ~skC, pk(~skC)),
+      !Client_Expected_Iss(ClientID, iss) ]
+
+rule Client_RequestAttestation_ToAA_Step5[role="Client"]:
+    [ Client_GenerateKey_ToClient_Step4(ClientID, nonce),
+      !Client_Key(ClientID, skC, pkC),
+      Client_KeygenSlot(ClientID),
+      Fr(~Device_Info) ]
+    --[ Client_Sent_Attestation_Request(ClientID, nonce, pkC) ]->
+    [ Client_RequestAttestation_ToAA_Step5(<~Device_Info, nonce, pkC>),
+      Client_AttestRequestPending_ToClient_Step5To8(ClientID, nonce, ~Device_Info),
+      Client_ClientIDForKeygen_ToAA(ClientID) ]
+
+rule Setup_AA_Enclave[role="AA"]:
+    [ Client_ClientIDForKeygen_ToAA(ClientID),
+      Fr(~aa_sk) ]
+    --[ Secret_AAKey(~aa_sk) ]->
+    [ !AA_Ltk(~aa_sk),
+      !PkAA(ClientID, pk(~aa_sk))]
+
+rule AA_SignAttestation_ToAA_Step6[role="AA"]:
+    [ Client_RequestAttestation_ToAA_Step5(<Device_Info, nonce, pkC>),
+      !AA_Ltk(aa_sk) ]
+    --[ AA_Signed_Attestation(nonce, pkC),
+        AA_NonceUsed(nonce) ]->
+    [ AA_SignAttestation_ToAA_Step6(sign(<Device_Info, nonce, pkC>, aa_sk)) ]
+
+rule AA_SendAttestation_ToClient_Step7[role="AA"]:
+    [ AA_SignAttestation_ToAA_Step6(attestJWT) ]
+    -->
+    [ AA_SendAttestation_ToClient_Step7(attestJWT) ]
+
+rule Client_ForwardPlatformAttest_ToBackend_Step7b[role="Client"]:
+    [ AA_SendAttestation_ToClient_Step7(platformAttest),
+      Client_AttestRequestPending_ToClient_Step5To8(ClientID, nonce, Device_Info),
+      !Client_Key(ClientID, skC, pkC) ]
+    -->
+    [ Out_S($Client, $Backend, <'wrap_cat_c2b', ClientID, nonce, pkC, Device_Info, platformAttest>),
+      Client_AwaitingCAT_ToClient(ClientID, nonce, Device_Info, platformAttest, pkC) ]
+
+rule Backend_WrapCAT_ToClient_Step7c[role="Backend"]:
+    [ In_S($Client, $Backend, <'wrap_cat_c2b', ClientID, nonce, pkC, Device_Info, platformAttest>),
+      !Backend_Ltk(backend_sk) ]
+    --[ Backend_Issued_CAT(ClientID, pkC, nonce) ]->
+    [ Out_S($Backend, $Client,
+         <'cat_response_b2c', ClientID,
+           sign(<'client-attestation+jwt', ClientID, pkC, nonce, platformAttest>, backend_sk),
+           platformAttest>) ]
+
+// ============================================================================
+// DPoP CREATION & AUTHORIZATION REQUEST (Steps 8-10)
+// ============================================================================
+
+rule Client_CreateDPoPP_ToClient_Step8[role="Client"]:
+    [ In_S($Backend, $Client, <'cat_response_b2c', ClientID, clientAttestJWT, platformAttest>),
+      Client_AwaitingCAT_ToClient(ClientID, nonce, Device_Info, platformAttest, pkC),
+      !Client_Key(ClientID, skC, pkC),
+      Fr(~DPoP_Params) ]
+    --[ Client_Created_DPoP(pkC, ~DPoP_Params,'authz') ]->
+    [ Client_DPoPAttestation_ToClient_Step8(ClientID, nonce, clientAttestJWT, platformAttest, Device_Info),
+      Client_CreateDPoPP_ToClient_Step8(
+          sign(<~DPoP_Params, nonce>, skC), pkC, ~DPoP_Params, nonce) ]
+
+rule Client_SendAuthzReq_ToBackend_Step9[role="Client"]:
+    [ Client_DPoPAttestation_ToClient_Step8(ClientID, nonce, clientAttestJWT, platformAttest, Device_Info),
+      Client_CreateDPoPP_ToClient_Step8(dpopp, pkC, DPoP_Params, nonce) ]
+    -->
+    [ Out_S($Client, $Backend,
+        <'step9_c2b', ClientID, nonce, Device_Info, platformAttest, clientAttestJWT,
+         dpopp, pkC, DPoP_Params, pkC>) ]
+
+rule Backend_SendAuthzReq_ToAS_Step9[role="Backend"]:
+    [ In_S($Client, $Backend,
+        <'step9_c2b', ClientID, nonce, Device_Info, platformAttest, clientAttestJWT,
+         dpopp, pkC, DPoP_Params, dpop_jkt>) ]
+    -->
+    [ Out_S($Backend, $AS,
+        <'step9_b2as', ClientID, nonce, Device_Info, platformAttest, clientAttestJWT,
+         dpopp, pkC, DPoP_Params, dpop_jkt>) ]
+
+rule AS_VerifyJWTAndDPoPP_ToBackend_Step10[role="AS"]:
+    [ In_S($Backend, $AS, <'step9_b2as', ClientID, nonce, Device_Info, platformAttest, clientAttestJWT, dpopp, pkC, DPoP_Params, dpop_jkt>),
+      AS_Pending_Challenge_Nonce_Useable(ClientID, nonce, iss),
+      !PkAA(ClientID,pkAA),
+      !AS_Knows_Backend(pkBackend),
+      !AS_Identity(iss),
+      !AS_FIDO_Credential(ClientID, pkFIDO, rpId),
+      Fr(~FIDONonce) ]
+    --[ Eq(verify(platformAttest, <Device_Info, nonce, pkC>, pkAA), true),
+        Eq(verify(dpopp, <DPoP_Params, nonce>, pkC), true),
+        Eq(verify(clientAttestJWT, <'client-attestation+jwt', ClientID, pkC, nonce, platformAttest>, pkBackend), true),
+        Eq(dpop_jkt, pkC),
+        AS_Request_Accepted(<'authorization', nonce>),
+        AS_Accepted_Client_Key(ClientID, pkC),
+        AS_Verified_CAT(ClientID, pkC),
+        AS_Verified_PlatformAttest(ClientID, pkC),
+        AS_Verified_dpop_jkt(ClientID, pkC),
+        DPoP_Used(DPoP_Params),
+        DPoP_Verified(DPoP_Params, pkC),
+        AS_Issued_FIDONonce(~FIDONonce, ClientID, rpId)]->
+    [ Out_S($AS, $Backend, <'fido_challenge_as2b', ClientID, ~FIDONonce, iss, rpId>),
+      AS_PendingFIDOAuth(ClientID, ~FIDONonce, iss, rpId),
+      !AS_Client_Tied_PublicKey(ClientID, pkC, iss) ]
+
+// ============================================================================
+// FIDO2 AUTHENTICATION (Step 11)
+// ============================================================================
+
+rule Backend_SendChallenge_ToClient_FIDOStep1[role="Backend"]:
+    [ In_S($AS, $Backend, <'fido_challenge_as2b', ClientID, FIDONonce, iss, rpId>) ]
+    -->
+    [ Out_S($Backend, $Client,<'fido_challenge_b2c', ClientID, FIDONonce, iss, rpId>) ]
+
+rule Client_StartAuth_ToFIDOAuthenticator_FIDOStep2[role="Client"]:
+    [ In_S($Backend, $Client, <'fido_challenge_b2c', ClientID, FIDONonce, iss, rpId>),
+      !Client_Expected_Iss(ClientID, iss) ]
+    -->
+    [ Client_StartAuth_ToFIDOAuthenticator_FIDOStep2(ClientID, FIDONonce, rpId) ]
+
+rule FIDOAuthenticator_Authenticated[role="FIDOAuthenticator"]:
+    [ Client_StartAuth_ToFIDOAuthenticator_FIDOStep2(ClientID, FIDONonce, rpId),
+      !FIDO_Ltk(ClientID, skFIDO, rpIdStored) ]
+    --[ FIDOAuth_Initiated(ClientID, rpId),
+        Eq(rpId, rpIdStored),
+        FIDO_Authenticator_Signed(ClientID, rpId, FIDONonce) ]->
+    [ FIDOAuthenticator_Authenticated(
+          sign(<rpId, FIDONonce>, skFIDO),
+          ClientID, FIDONonce, rpId) ]
+
+rule Client_SendAuth_ToBackend_FIDOStep4[role="Client"]:
+    [ FIDOAuthenticator_Authenticated(SignedAuth, ClientID, FIDONonce, rpId) ]
+    -->
+    [ Out_S($Client, $Backend, <'fido_auth_c2b', SignedAuth, ClientID, FIDONonce, rpId>) ]
+
+rule Backend_SendAuth_ToAS_FIDOStep4[role="Backend"]:
+    [ In_S($Client, $Backend, <'fido_auth_c2b', SignedAuth, ClientID, FIDONonce, rpId>) ]
+    -->
+    [ Out_S($Backend, $AS, <'fido_auth_b2c', SignedAuth, ClientID, FIDONonce, rpId>) ]
+
+rule AS_VerifyChallengeSendCode_ToBackend_FIDOStep5[role="AS"]:
+    [ In_S($Backend, $AS,<'fido_auth_b2c', SignedAuth, ClientID, FIDONonce, rpId>),
+      !AS_FIDO_Credential(ClientID, pkFIDO, rpIdStored),
+      !AS_Client_Tied_PublicKey(ClientID, pkC, iss),
+      Fr(~authorization_code),
+      AS_PendingFIDOAuth(ClientID, FIDONonce, iss, rpIdChallenge) ]
+    --[ Eq(rpId, rpIdStored),
+        Eq(rpId, rpIdChallenge),
+        Eq(verify(SignedAuth, <rpId, FIDONonce>, pkFIDO), true),
+        AS_Verified_rpIdHash(ClientID, rpId),
+        FIDO_Auth_Success(ClientID, rpId),
+        AS_Request_Accepted(<'fido_auth', FIDONonce>),
+        AS_Auth_Completed(ClientID),
+        AuthzCode_Issued(~authorization_code, ClientID, pkC, iss) ]->
+    [ Out_S($AS, $Backend, <'auth_completed_as2b', ClientID, ~authorization_code>),
+      AuthzCode(~authorization_code, ClientID, pkC, iss) ]
+
+// ============================================================================
+// TOKEN EXCHANGE & RESOURCE ACCESS (Steps 12-19)
+// ============================================================================
+
+rule Backend_RequestDPoP_ForTokenExchange[role="Backend"]:
+    [ In_S($AS, $Backend, <'auth_completed_as2b', ClientID, authorization_code>) ]
+    -->
+    [ Out_S($Backend, $Client, <'dpop_needed_for_token_b2c', ClientID>),
+      Backend_PendingTokenExchange(ClientID, authorization_code) ]
+
+rule Client_CreateDPoP_ForTokenExchange[role="Client"]:
+    [ In_S($Backend, $Client, <'dpop_needed_for_token_b2c', ClientID>),
+      !Client_Key(ClientID, skC, pkC),
+      Fr(~DPoP_Params_TE) ]
+    --[ Client_Created_DPoP(pkC, ~DPoP_Params_TE,'token_te') ]->
+    [ Out_S($Client, $Backend, <'dpop_for_token_c2b', sign(<~DPoP_Params_TE,'token_endpoint'>, skC), pkC, ~DPoP_Params_TE, ClientID>) ]
+
+rule Backend_TokenRequest_ToAS_Step12[role="Backend"]:
+    [ In_S($Client, $Backend, <'dpop_for_token_c2b', dpopp_te, pkC, DPoP_Params_TE, ClientID>),
+      Backend_PendingTokenExchange(ClientID, authorization_code) ]
+    -->
+    [ Out_S($Backend, $AS, <'token_req_b2as', ClientID, authorization_code,
+            dpopp_te, pkC, DPoP_Params_TE>) ]
+
+rule AS_TokenAns_ToBackend_Step13[role="AS"]:
+    [ In_S($Backend, $AS, <'token_req_b2as', ClientID, authorization_code,
+            dpopp_te, pkC, DPoP_Params_TE>),
+      AuthzCode(authorization_code, ClientID, pkC, iss),
+      !AS_Client_Tied_PublicKey(ClientID, pkC, iss),
+      Fr(~constrained_access_token),
+      Fr(~DPoP_reference_token),
+      Fr(~refresh_token),
+      !AS_Identity(iss) ]
+    --[ Eq(verify(dpopp_te, <DPoP_Params_TE,'token_endpoint'>, pkC), true),
+        DPoP_Used(DPoP_Params_TE),
+        DPoP_Verified(DPoP_Params_TE, pkC),
+        AS_Request_Accepted(<'token_exchange', authorization_code>),
+        AuthzCode_Redeemed(authorization_code, ClientID, pkC),
+        Token_Issued(~constrained_access_token, ClientID, pkC),
+        RefToken_Issued(~DPoP_reference_token, ClientID, pkC),
+        RefreshToken_Issued(~refresh_token, ClientID, pkC),
+        Token_Issued_By_Iss(ClientID, iss) ]->
+    [ !ConstrainedAccess(~constrained_access_token, pkC),
+      !ConstrainedReference(~DPoP_reference_token, pkC, iss),
+      !ConstrainedRefresh(~refresh_token, pkC),
+      Out_S($AS, $Backend, <'token_resp_as2b', ClientID, ~DPoP_reference_token,
+             ~constrained_access_token, pkC, iss, ~refresh_token>) ]
+
+rule Backend_SendReferenceToken_ToClient_Step14[role="Backend"]:
+    [ In_S($AS, $Backend, <'token_resp_as2b', ClientID, DPoP_reference_token,
+            constrained_access_token, pkC, iss, refresh_token>) ]
+    -->
+    [ Out_S($Backend, $Client, <'ref_token_b2c', ClientID, DPoP_reference_token, iss>),
+      Backend_AccessTokenHeld(DPoP_reference_token, constrained_access_token, pkC, ClientID),
+      Backend_RefreshTokenHeld(refresh_token, pkC, ClientID) ]
+
+rule Client_GenerateDPoP_Step15_SendDPoP_ToBackend_Step16[role="Client"]:
+    [ In_S($Backend, $Client, <'ref_token_b2c', ClientID, DPoP_reference_token, iss>),
+      !Client_Key(ClientID, skC, pkC),
+      !Client_Expected_Iss(ClientID, iss),
+      Fr(~DPoP_Params2) ]
+    --[ Client_Verified_Iss(ClientID, iss),
+        Client_Created_DPoP(pkC, ~DPoP_Params2,'resource') ]->
+    [ Out_S($Client, $Backend, <'dpop_resource_c2b',
+            sign(<~DPoP_Params2, DPoP_reference_token>, skC),
+            pkC, ~DPoP_Params2, DPoP_reference_token>),
+      Client_CanRefresh(ClientID) ]
+
+rule Backend_ResourceRequest_ToRS_Step17[role="Backend"]:
+    [ In_S($Client,$Backend, <'dpop_resource_c2b', dpopp, pkC, DPoP_Params2, DPoP_reference_token>),
+      Backend_AccessTokenHeld(DPoP_reference_token, constrained_access_token, pkC, ClientID) ]
+    -->
+    [ Out_S($Backend, $RS, <'rs_verify_b2rs', constrained_access_token, dpopp, pkC,
+            DPoP_Params2, DPoP_reference_token, ClientID>) ]
+
+rule RS_ForwardIntrospection_ToAS[role="RS API"]:
+    [ In_S($Backend, $RS, <'rs_verify_b2rs', constrained_access_token, dpopp, pkC,
+           DPoP_Params2, DPoP_reference_token, ClientID>)]
+    -->
+    [ Out_S($RS, $AS, <'introspect', constrained_access_token, dpopp, pkC,
+            DPoP_Params2, DPoP_reference_token, ClientID>) ,
+            RS_Client_Tied_Access(ClientID,constrained_access_token)]
+
+rule AS_VerifyDPoPPAndTokens_Step18[role="AS"]:
+    [ In_S($RS, $AS, <'introspect', constrained_access_token, dpopp, pkC,
+           DPoP_Params2, DPoP_reference_token, ClientID>),
+      !ConstrainedAccess(constrained_access_token, pkC),
+      !ConstrainedReference(DPoP_reference_token, pkC, iss),
+      !AS_Client_Tied_PublicKey(ClientID, pkC, iss) ,
+      !AS_Identity(iss) ]
+    --[ Eq(verify(dpopp, <DPoP_Params2, DPoP_reference_token>, pkC), true),
+        DPoP_Used(DPoP_Params2),
+        DPoP_Verified(DPoP_Params2, pkC),
+        AS_Request_Accepted(<'resource_access', DPoP_Params2>),
+        Token_Used_For_Access(constrained_access_token, ClientID, pkC) ]->
+    [ Out_S($AS, $RS, <'verified', ClientID, constrained_access_token>) ]
+
+rule RS_SendResource_Step19[role="RS API"]:
+    [ In_S($AS, $RS, <'verified', ClientID, constrained_access_token>),
+      !RS_Resource(data),
+      RS_Client_Tied_Access(ClientID, constrained_access_token) ]
+    --[ RS_Sent_Resource(data, ClientID, constrained_access_token),
+        RS_Access_Granted(data, ClientID) ]->
+    [ Out_S($RS, $Client, <'resource_sent', data, ClientID>) ]
+
+rule Client_Received_Data[role="Client"]:
+   [In_S($RS,$Client,<'resource_sent',data,ClientID>)]
+   --[Client_Recourse_Received(data,ClientID)]->
+   []
+
+// ============================================================================
+// REFRESH TOKEN EXCHANGE
+// ============================================================================
+
+rule Client_RequestRefresh[role="Client"]:
+    [ Client_CanRefresh(ClientID),
+      !Client_Key(ClientID, skC, pkC),
+      Fr(~DPoP_Params_Refresh) ]
+    --[ Client_Created_DPoP(pkC, ~DPoP_Params_Refresh,'refresh'),
+        Client_Requested_Refresh(ClientID) ]->
+    [ Out_S($Client, $Backend, <'refresh_req_c2b',
+            sign(<~DPoP_Params_Refresh, 'refresh'>, skC),
+            pkC, ~DPoP_Params_Refresh, ClientID>) ]
+
+rule Backend_RefreshRequest_ToAS[role="Backend"]:
+    [ In_S($Client, $Backend, <'refresh_req_c2b', dpopp, pkC, DPoP_Params_R, ClientID>),
+      Backend_RefreshTokenHeld(refresh_token, pkC, ClientID) ]
+    -->
+    [ Out_S($Backend, $AS, <'refresh_req_b2as', refresh_token, dpopp, pkC, DPoP_Params_R, ClientID>) ]
+
+rule AS_VerifyRefresh_IssueToken[role="AS"]:
+    [ In_S($Backend, $AS, <'refresh_req_b2as', refresh_token, dpopp, pkC, DPoP_Params_R, ClientID>),
+      !ConstrainedRefresh(refresh_token, pkC),
+      !AS_Client_Tied_PublicKey(ClientID, pkC, iss),
+      !AS_Identity(iss)  ]
+    --[ Eq(verify(dpopp, <DPoP_Params_R,'refresh'>, pkC), true),
+        DPoP_Used(DPoP_Params_R),
+        DPoP_Verified(DPoP_Params_R, pkC),
+        AS_Request_Accepted(<'refresh', DPoP_Params_R>),
+        RefreshToken_Used(refresh_token, ClientID, pkC) ]->
+    [ AS_RefreshCompleted(ClientID) ]
+
+// ============================================================================
+// LEAK / ATTACKER EVENTS
+// ============================================================================
+
+rule Leak_Access_Token:
+    [ !ConstrainedAccess(token, pkC) ]
+    --[ LeakToken(token, pkC) ]->
+    [ Out(token) ]
+
+rule Leak_Reference_Token:
+    [ !ConstrainedReference(ref_token, pkC, iss) ]
+    --[ LeakRefToken(ref_token, pkC) ]->
+    [ Out(ref_token) ]
+
+rule Leak_Refresh_Token:
+    [ !ConstrainedRefresh(refresh_token, pkC) ]
+    --[ LeakRefreshToken(refresh_token, pkC) ]->
+    [ Out(refresh_token) ]
+
+rule Reveal_AA_Key:
+    [ !AA_Ltk(aa_sk) ]
+    --[ RevealAA(aa_sk) ]->
+    [ Out(aa_sk) ]
+
+rule Reveal_Client_Key:
+    [ !Client_Key(ClientID, skC, pkC) ]
+    --[ RevealClientKey(ClientID, skC) ]->
+    [ Out(skC) ]
+
+rule Reveal_Backend_Key:
+    [ !Backend_Ltk(backend_sk) ]
+    --[ RevealBackend(backend_sk) ]->
+    [ Out(backend_sk) ]
+
+rule Reveal_FIDO_Key:
+    [ !FIDO_Ltk(ClientID, skFIDO, rpId) ]
+    --[ RevealFIDO(ClientID) ]->
+    [ Out(skFIDO) ]
+
+// ============================================================================
+// RESTRICTIONS
+// ============================================================================
+
+restriction Equality:
+    "All x y #i. Eq(x,y) @ #i ==> x = y"
+
+restriction unique_dpopp:
+    "All params #i #j.
+       DPoP_Used(params) @ #i & DPoP_Used(params) @ #j
+       ==> #i = #j"
+
+restriction no_replay:
+    "All id #i #j.
+       AS_Request_Accepted(id) @ #i & AS_Request_Accepted(id) @ #j
+       ==> #i = #j"
+
+restriction unique_attestation_per_nonce:
+    "All nonce pkC1 pkC2 #i #j.
+       AA_Signed_Attestation(nonce, pkC1) @ #i
+       & AA_Signed_Attestation(nonce, pkC2) @ #j
+       ==> #i = #j"
+
+// ============================================================================
+// SOURCES
+// ============================================================================
+
+lemma typing [sources]:
+  " (All t cid pk #i #j.
+        Token_Issued(t, cid, pk) @ #j & !KU(t) @ #i
+        ==> (Ex #l. LeakToken(t, pk) @ #l & #l < #i))
+  & (All t cid pk #i #j.
+        RefToken_Issued(t, cid, pk) @ #j & !KU(t) @ #i
+        ==> (Ex #l. LeakRefToken(t, pk) @ #l & #l < #i))
+  & (All t cid pk #i #j.
+        RefreshToken_Issued(t, cid, pk) @ #j & !KU(t) @ #i
+        ==> (Ex #l. LeakRefreshToken(t, pk) @ #l & #l < #i))
+  & (All c cid pk iss #i #j.
+        AuthzCode_Issued(c, cid, pk, iss) @ #j & !KU(c) @ #i
+        ==> F)
+  & (All n #i #j.
+        AS_Issued_Nonce(n) @ #j & !KU(n) @ #i
+        ==> F)
+  & (All n cid rpId #i #j.
+        AS_Issued_FIDONonce(n, cid, rpId) @ #j & !KU(n) @ #i
+        ==> F)
+  "
+
+
+lemma token_implies_code [reuse]:
+  "All t cid pk #i. Token_Issued(t, cid, pk) @ #i
+   ==> (Ex c iss #j. AuthzCode_Issued(c, cid, pk, iss) @ #j & #j < #i)"
+
+lemma code_implies_accept [reuse]:
+  "All c cid pk iss #i. AuthzCode_Issued(c, cid, pk, iss) @ #i
+   ==> (Ex #j. AS_Accepted_Client_Key(cid, pk) @ #j & #j < #i)"
+
+lemma access_implies_issued [reuse, use_induction]:
+  "All t cid pk #i. Token_Used_For_Access(t, cid, pk) @ #i
+   ==> (Ex #j. Token_Issued(t, cid, pk) @ #j & #j < #i)"
+
+lemma refresh_used_implies_issued [reuse]:
+  "All t cid pk #i. RefreshToken_Used(t, cid, pk) @ #i
+   ==> (Ex #j. RefreshToken_Issued(t, cid, pk) @ #j & #j < #i)"
+
+lemma accept_unique_pkC [reuse, use_induction]:
+  "All cid pk1 pk2 #i #j.
+      AS_Accepted_Client_Key(cid, pk1) @ #i
+    & AS_Accepted_Client_Key(cid, pk2) @ #j
+    ==> pk1 = pk2"
+
+lemma client_iss_unique [reuse, use_induction]:
+  "All cid iss1 iss2 #i #j.
+      Client_Learned_Iss(cid, iss1) @ #i
+    & Client_Learned_Iss(cid, iss2) @ #j
+    ==> iss1 = iss2 & #i = #j" 
+
+// ============================================================================
+// UNIQUE PROOFS
+// ============================================================================
+
+lemma L_unique_dpopp_proof:
+    all-traces
+    "All params #i #j.
+       DPoP_Used(params) @ #i & DPoP_Used(params) @ #j
+       ==> #i = #j"
+
+lemma L_unique_attestation_proof:
+    all-traces
+    "All nonce pkC1 pkC2 #i #j.
+       AA_Signed_Attestation(nonce, pkC1) @ #i
+       & AA_Signed_Attestation(nonce, pkC2) @ #j
+       ==> #i = #j & pkC1 = pkC2"
+
+// ============================================================================
+// SANITY
+// ============================================================================
+
+lemma SANITY_keygen[hide_lemma=R2_dpop_requires_creation,
+   hide_lemma=B1_attestation_unforgeable,
+   hide_lemma=B2_as_requires_attestation,
+   hide_lemma=B3_token_implies_attestation,
+   hide_lemma=I1_token_requires_hardware_key,
+   hide_lemma=accept_unique_pkC,
+   hide_lemma=client_iss_unique,
+   hide_lemma=token_implies_code,
+   hide_lemma=code_implies_accept,
+   hide_lemma=access_implies_issued,
+   hide_lemma=refresh_used_implies_issued]: exists-trace
+  "Ex cid pk #t. Client_Learned_Iss(cid, pk) @ #t"
+
+lemma SANITY_token_issued[hide_lemma=R2_dpop_requires_creation,
+   hide_lemma=B1_attestation_unforgeable,
+   hide_lemma=B2_as_requires_attestation,
+   hide_lemma=B3_token_implies_attestation,
+   hide_lemma=I1_token_requires_hardware_key,
+   hide_lemma=accept_unique_pkC,
+   hide_lemma=client_iss_unique,
+   hide_lemma=token_implies_code,
+   hide_lemma=code_implies_accept,
+   hide_lemma=access_implies_issued,
+   hide_lemma=refresh_used_implies_issued]: exists-trace
+  "Ex t cid pk #i. Token_Issued(t, cid, pk) @ #i"
+
+lemma SANITY_dpop_verified[hide_lemma=R2_dpop_requires_creation,
+   hide_lemma=B1_attestation_unforgeable,
+   hide_lemma=B2_as_requires_attestation,
+   hide_lemma=B3_token_implies_attestation,
+   hide_lemma=I1_token_requires_hardware_key,
+   hide_lemma=accept_unique_pkC,
+   hide_lemma=client_iss_unique,
+   hide_lemma=token_implies_code,
+   hide_lemma=code_implies_accept,
+   hide_lemma=access_implies_issued,
+   hide_lemma=refresh_used_implies_issued]: exists-trace
+  "Ex p pk #i. DPoP_Verified(p, pk) @ #i"
+
+lemma SANITY_token_used[hide_lemma=R2_dpop_requires_creation,
+   hide_lemma=B1_attestation_unforgeable,
+   hide_lemma=B2_as_requires_attestation,
+   hide_lemma=B3_token_implies_attestation,
+   hide_lemma=I1_token_requires_hardware_key,
+   hide_lemma=accept_unique_pkC,
+   hide_lemma=client_iss_unique,
+   hide_lemma=token_implies_code,
+   hide_lemma=code_implies_accept,
+   hide_lemma=access_implies_issued,
+   hide_lemma=refresh_used_implies_issued]: exists-trace
+  "Ex t cid pk #i. Token_Used_For_Access(t, cid, pk) @ #i"
+
+lemma SANITY_refresh_used[hide_lemma=R2_dpop_requires_creation,
+   hide_lemma=B1_attestation_unforgeable,
+   hide_lemma=B2_as_requires_attestation,
+   hide_lemma=B3_token_implies_attestation,
+   hide_lemma=I1_token_requires_hardware_key,
+   hide_lemma=accept_unique_pkC,
+   hide_lemma=client_iss_unique,
+   hide_lemma=token_implies_code,
+   hide_lemma=code_implies_accept,
+   hide_lemma=access_implies_issued,
+   hide_lemma=refresh_used_implies_issued]: exists-trace
+  "Ex t cid pk #i. RefreshToken_Used(t, cid, pk) @ #i"
+
+lemma SANITY_resource_received[hide_lemma=R2_dpop_requires_creation,
+   hide_lemma=B1_attestation_unforgeable,
+   hide_lemma=B2_as_requires_attestation,
+   hide_lemma=B3_token_implies_attestation,
+   hide_lemma=I1_token_requires_hardware_key,
+   hide_lemma=accept_unique_pkC,
+   hide_lemma=client_iss_unique,
+   hide_lemma=token_implies_code,
+   hide_lemma=code_implies_accept,
+   hide_lemma=access_implies_issued,
+   hide_lemma=refresh_used_implies_issued]: exists-trace
+  "Ex data cid #t. Client_Recourse_Received(data, cid) @ #t"
+
+lemma SANITY_full_chain[hide_lemma=R2_dpop_requires_creation,
+   hide_lemma=B1_attestation_unforgeable,
+   hide_lemma=B2_as_requires_attestation,
+   hide_lemma=B3_token_implies_attestation,
+   hide_lemma=I1_token_requires_hardware_key,
+   hide_lemma=accept_unique_pkC,
+   hide_lemma=client_iss_unique,
+   hide_lemma=token_implies_code,
+   hide_lemma=code_implies_accept,
+   hide_lemma=access_implies_issued,
+   hide_lemma=refresh_used_implies_issued]:
+    exists-trace
+    "Ex data ClientID nonce pkC code token iss rpId
+        #t1 #t2 #t3 #t4 #t5 #t6 #t7 #t8 #t9 #t10.
+       AS_Issued_Nonce(nonce)                                @ #t1
+     & Client_Sent_Attestation_Request(ClientID, nonce, pkC) @ #t2
+     & AA_Signed_Attestation(nonce, pkC)                     @ #t3
+     & Backend_Issued_CAT(ClientID, pkC, nonce)              @ #t4
+     & AS_Accepted_Client_Key(ClientID, pkC)                 @ #t5
+     & FIDOAuth_Initiated(ClientID, rpId)                    @ #t6
+     & FIDO_Auth_Success(ClientID, rpId)                     @ #t7
+     & AuthzCode_Issued(code, ClientID, pkC, iss)            @ #t7
+     & Token_Issued(token, ClientID, pkC)                    @ #t8
+     & Token_Used_For_Access(token, ClientID, pkC)           @ #t9
+     & RS_Access_Granted(data, ClientID)                     @ #t10
+     & #t1 < #t2 & #t2 < #t3 & #t3 < #t4 & #t4 < #t5
+     & #t5 < #t6 & #t6 < #t7 & #t7 < #t8 & #t8 < #t9
+     & #t9 < #t10"
+
+// ============================================================================
+// S: SECRET KEY SECRECY
+// ============================================================================
+
+lemma S1_client_key_secrecy:
+    all-traces
+    "All ClientID k #i. Secret_ClientKey(ClientID, k) @ #i
+     ==> not (Ex #j. K(k) @ #j)
+         | (Ex #r. RevealClientKey(ClientID, k) @ #r)"
+
+lemma S2_access_token_secrecy:
+    all-traces
+    "All token ClientID pkC #i. Token_Issued(token, ClientID, pkC) @ #i
+     ==> not (Ex #j. K(token) @ #j)
+         | (Ex #l. LeakToken(token, pkC) @ #l)"
+
+lemma S3_reference_token_secrecy:
+    all-traces
+    "All token ClientID pkC #i. RefToken_Issued(token, ClientID, pkC) @ #i
+     ==> not (Ex #j. K(token) @ #j)
+         | (Ex #l. LeakRefToken(token, pkC) @ #l)"
+
+lemma S4_aa_key_secrecy:
+    all-traces
+    "All k #i. Secret_AAKey(k) @ #i
+     ==> not (Ex #j. K(k) @ #j)
+         | (Ex #r. RevealAA(k) @ #r)"
+
+lemma S5_refresh_token_secrecy:
+    all-traces
+    "All token ClientID pkC #i. RefreshToken_Issued(token, ClientID, pkC) @ #i
+     ==> not (Ex #j. K(token) @ #j)
+         | (Ex #l. LeakRefreshToken(token, pkC) @ #l)"
+
+lemma S6_backend_key_secrecy:
+    all-traces
+    "All k #i. Secret_BackendKey(k) @ #i
+     ==> not (Ex #j. K(k) @ #j)
+         | (Ex #r. RevealBackend(k) @ #r)"
+
+// ============================================================================
+// Z: AUTHORIZATION CORRECTNESS
+// ============================================================================
+
+lemma Z1_code_after_attestation:
+    all-traces
+    "All code ClientID pkC iss #i. AuthzCode_Issued(code, ClientID, pkC, iss) @ #i
+     ==> (Ex nonce #j #k. 
+       AS_Issued_Nonce(nonce) @ #j 
+       & AA_Signed_Attestation(nonce, pkC) @ #k & #j < #k & #k < #i)
+         | (Ex aa_sk #r. RevealAA(aa_sk) @ #r)"
+
+lemma Z2_no_double_redeem:
+    all-traces
+    "not (Ex code ClientID1 ClientID2 pkC1 pkC2 #i #j.
+            AuthzCode_Redeemed(code, ClientID1, pkC1) @ #i
+            & AuthzCode_Redeemed(code, ClientID2, pkC2) @ #j
+            & not (#i = #j))"
+
+lemma Z3_no_auth_code_substitution:
+    all-traces
+    "All code ClientID1 ClientID2 pkC1 pkC2 iss #i #j.
+       AuthzCode_Issued(code, ClientID1, pkC1, iss) @ #i
+       & AuthzCode_Redeemed(code, ClientID2, pkC2) @ #j
+       ==> ClientID1 = ClientID2 & pkC1 = pkC2"
+
+
+lemma Z4_code_unique_issuance: 
+    all-traces
+    "All code ClientID1 ClientID2 pkC1 pkC2 iss1 iss2 #i #j.
+       AuthzCode_Issued(code, ClientID1, pkC1, iss1) @ #i
+       & AuthzCode_Issued(code, ClientID2, pkC2, iss2) @ #j
+       ==> #i = #j & ClientID1 = ClientID2 & pkC1 = pkC2 & iss1 = iss2"
+
+// ============================================================================
+// T: TOKEN BINDING / PROOF-OF-POSSESSION
+// ============================================================================
+
+lemma T1_stolen_token_unusable:
+    all-traces
+    "All token pkC ClientID #i #j.
+       LeakToken(token, pkC) @ #i
+       & Token_Used_For_Access(token, ClientID, pkC) @ #j
+       ==> (Ex params ctx #k #l.
+              Client_Created_DPoP(pkC, params,ctx) @ #k
+              & DPoP_Verified(params, pkC) @ #l
+              & #k < #l & #l < #j)
+           | (Ex skC #r. RevealClientKey(ClientID, skC) @ #r)"
+
+lemma T2_token_access_requires_pop:
+    all-traces
+    "All token ClientID pkC #i. Token_Used_For_Access(token, ClientID, pkC) @ #i
+     ==> (Ex params #j #k.
+            DPoP_Verified(params, pkC) @ #j
+            & AS_Accepted_Client_Key(ClientID, pkC) @ #k
+            & (#k < #j | #k = #j)
+            &  #j < #i)
+         | (Ex skC #r. RevealClientKey(ClientID, skC) @ #r)"
+
+lemma T3_no_token_identity_crossing:
+    all-traces
+    "All token ClientID1 ClientID2 pkC1 pkC2 #i #j.
+       Token_Issued(token, ClientID1, pkC1) @ #i
+       & Token_Used_For_Access(token, ClientID2, pkC2) @ #j
+       ==> ClientID1 = ClientID2 & pkC1 = pkC2"
+
+lemma T4_stolen_refresh_token_unusable:
+    all-traces
+    "All token pkC ClientID #i #j.
+       LeakRefreshToken(token, pkC) @ #i
+       & RefreshToken_Used(token, ClientID, pkC) @ #j
+       ==> (Ex params ctx #k. Client_Created_DPoP(pkC, params,ctx) @ #k & #k < #j)
+           | (Ex skC #k. RevealClientKey(ClientID, skC) @ #k)"
+
+lemma T5_stolen_refresh_needs_dpop:
+    all-traces
+    "All token pkC ClientID #i #j.
+       LeakRefreshToken(token, pkC) @ #i
+       & RefreshToken_Used(token, ClientID, pkC) @ #j
+       ==> (Ex params ctx #k #l.
+              Client_Created_DPoP(pkC, params, ctx) @ #k
+              & DPoP_Verified(params, pkC) @ #l
+              & #k < #l & #l = #j)
+           | (Ex skC #r. RevealClientKey(ClientID, skC) @ #r)"
+
+// ============================================================================
+// R: REPLAY RESISTANCE AND FRESHNESS
+// ============================================================================
+
+lemma R1_dpop_requires_creation:
+    all-traces
+    "All params pkC #i. DPoP_Verified(params, pkC) @ #i
+     ==> (Ex ctx #j. Client_Created_DPoP(pkC, params, ctx) @ #j & #j < #i)
+         | (Ex ClientID skC #r. RevealClientKey(ClientID, skC) @ #r)"
+
+// ============================================================================
+// B: ATTESTATION BINDING
+// ============================================================================
+
+lemma B1_attestation_unforgeable[reuse]:
+    all-traces
+    "All nonce pkC #i. AA_Signed_Attestation(nonce, pkC) @ #i
+     ==> (Ex ClientID #j. Client_Sent_Attestation_Request(ClientID, nonce, pkC) @ #j & #j < #i)
+         | (Ex aa_sk #r. RevealAA(aa_sk) @ #r)"
+
+lemma B2_as_requires_attestation[reuse]:
+    all-traces
+    "All ClientID pkC #i. AS_Accepted_Client_Key(ClientID, pkC) @ #i
+     ==> (Ex nonce #j. AA_Signed_Attestation(nonce, pkC) @ #j & #j < #i)
+         | (Ex aa_sk #r. RevealAA(aa_sk) @ #r)"
+
+lemma B3_token_implies_attestation[reuse]:
+    all-traces
+    "All token ClientID pkC #i. Token_Issued(token, ClientID, pkC) @ #i
+     ==> (Ex nonce #j #k.
+       AA_Signed_Attestation(nonce, pkC) @ #j
+       & AS_Accepted_Client_Key(ClientID, pkC) @ #k
+       & #j < #k & #k < #i)
+        | (Ex aa_sk #r. RevealAA(aa_sk) @ #r)"
+
+lemma B4_attestation_key_binding:
+    all-traces
+    "All ClientID1 ClientID2 pkC1 pkC2 nonce #i #j #k1 #k2.
+       AS_Accepted_Client_Key(ClientID1, pkC1) @ #i
+       & AS_Accepted_Client_Key(ClientID2, pkC2) @ #j
+       & AA_Signed_Attestation(nonce, pkC1) @ #k1
+       & AA_Signed_Attestation(nonce, pkC2) @ #k2
+       ==> pkC1 = pkC2"
+
+lemma B5_attestation_nonce_single_use:
+    all-traces
+    "All nonce #i #j.
+       AA_NonceUsed(nonce) @ #i & AA_NonceUsed(nonce) @ #j
+       ==> #i = #j"
+
+lemma B6_cat_unforgeable:
+    all-traces
+    "All ClientID pkC #i.
+       AS_Verified_CAT(ClientID, pkC) @ #i
+       ==> (Ex nonce #j. Backend_Issued_CAT(ClientID, pkC, nonce) @ #j & #j < #i)
+           | (Ex backend_sk #r. RevealBackend(backend_sk) @ #r)"
+
+lemma B7_dpop_jkt_matches_instance_key:
+    all-traces
+    "All ClientID pkC #i.
+       AS_Verified_dpop_jkt(ClientID, pkC) @ #i
+       ==> (Ex nonce #j.
+              Client_Sent_Attestation_Request(ClientID, nonce, pkC) @ #j
+              & #j < #i)
+           | (Ex skC #r. RevealClientKey(ClientID, skC) @ #r)"
+
+// ============================================================================
+// K: KEY CONTINUITY
+// ============================================================================
+
+lemma K1_key_continuity_attestation_to_token:
+    all-traces
+    "All ClientID pkC_accept token pkC_token #i #j.
+       AS_Accepted_Client_Key(ClientID, pkC_accept) @ #i
+       & Token_Issued(token, ClientID, pkC_token) @ #j
+       & #i < #j
+       ==> pkC_accept = pkC_token
+           | (Ex skC #r. RevealClientKey(ClientID, skC) @ #r)"
+
+lemma K2_key_continuity_token_to_access:
+    all-traces
+    "All token ClientID pkC1 pkC2 #i #j.
+       Token_Issued(token, ClientID, pkC1) @ #i
+       & Token_Used_For_Access(token, ClientID, pkC2) @ #j
+       ==> pkC1 = pkC2"
+
+lemma K3_dpop_key_matches_accepted:
+    all-traces
+    "All params pkC_dpop ClientID pkC_accept token #i #j #k.
+       DPoP_Verified(params, pkC_dpop) @ #i
+       & AS_Accepted_Client_Key(ClientID, pkC_accept) @ #j
+       & Token_Used_For_Access(token, ClientID, pkC_dpop) @ #k
+       & #j < #i & #i = #k
+       ==> pkC_dpop = pkC_accept
+           | (Ex skC #r. RevealClientKey(ClientID, skC) @ #r)"
+
+// ============================================================================
+// I: HARDWARE BOUND KEY CONTINUITY
+// ============================================================================
+
+lemma I1_token_requires_hardware_key [reuse]:
+  all-traces
+  "All token ClientID pkC #i.
+    Token_Issued(token, ClientID, pkC) @ #i
+    ==>
+      (Ex #j #k.
+         Client_Key_In_Hardware(pkC) @ #j
+         & AS_Accepted_Client_Key(ClientID, pkC) @ #k
+         & #j < #k & #k < #i)
+      | (Ex skC #r. RevealClientKey(ClientID, skC) @ #r)
+      | (Ex aa_sk #r. RevealAA(aa_sk) @ #r)"    
+
+
+lemma I2_access_requires_hardware_key:
+    all-traces
+    "All token ClientID pkC #i #j.
+       Token_Used_For_Access(token, ClientID, pkC) @ #i
+       & Token_Issued(token, ClientID, pkC) @ #j
+       & #j < #i
+       ==> (Ex #k #l.
+              Client_Key_In_Hardware(pkC) @ #k
+              & AS_Accepted_Client_Key(ClientID, pkC) @ #l
+              & #k < #l & #l < #j)
+           | (Ex skC #r. RevealClientKey(ClientID, skC) @ #r)
+           | (Ex aa_sk #r. RevealAA(aa_sk) @ #r)"
+
+// ============================================================================
+// E: END-TO-END
+// ============================================================================
+
+lemma E1_token_requires_authentication:
+    all-traces
+    "All token ClientID pkC #i. Token_Issued(token, ClientID, pkC) @ #i
+     ==> (Ex #j. AS_Auth_Completed(ClientID) @ #j & #j < #i)"
+
+lemma E2_resource_matches_issued_token:
+    all-traces
+    "All data ClientID #i.
+       Client_Recourse_Received(data, ClientID) @ #i
+       ==> (Ex token pkC #j #k.
+              RS_Sent_Resource(data, ClientID, token) @ #j
+              & Token_Issued(token, ClientID, pkC) @ #k
+              & #k < #j & #j < #i)"
+
+lemma E3_resource_requires_fresh_dpop[hide_lemma=B1_attestation_unforgeable,
+   hide_lemma=B2_as_requires_attestation,
+   hide_lemma=B3_token_implies_attestation,
+   hide_lemma=I1_token_requires_hardware_key]:
+    all-traces
+    "All data ClientID #i. Client_Recourse_Received(data, ClientID) @ #i
+     ==> (Ex pkC ctx params #j #k.
+            Client_Created_DPoP(pkC, params, ctx) @ #j
+            & DPoP_Verified(params, pkC) @ #k
+            & #j < #k & #k < #i
+            & (Ex #l. AS_Accepted_Client_Key(ClientID, pkC) @ #l))
+         | (Ex skC #r. RevealClientKey(ClientID, skC) @ #r)"
+
+lemma E4_refresh_requires_issuance:
+    all-traces
+    "All token ClientID pkC #i.
+       RefreshToken_Used(token, ClientID, pkC) @ #i
+       ==> (Ex #j.
+              RefreshToken_Issued(token, ClientID, pkC) @ #j
+              & #j < #i)"
+
+// ============================================================================
+// ISS: MIX-UP PREVENTION
+// ============================================================================
+
+lemma ISS1_consistency[hide_lemma=R2_dpop_requires_creation,
+   hide_lemma=B1_attestation_unforgeable,
+   hide_lemma=B2_as_requires_attestation,
+   hide_lemma=B3_token_implies_attestation,
+   hide_lemma=I1_token_requires_hardware_key]:
+    all-traces
+    "All ClientID iss #i.
+       Client_Verified_Iss(ClientID, iss) @ #i
+       ==> (Ex #j. Client_Learned_Iss(ClientID, iss) @ #j & #j < #i)"
+
+lemma ISS2_no_mix_up[hide_lemma=R2_dpop_requires_creation,
+   hide_lemma=B1_attestation_unforgeable,
+   hide_lemma=B2_as_requires_attestation,
+   hide_lemma=B3_token_implies_attestation,
+   hide_lemma=I1_token_requires_hardware_key]:
+    all-traces
+    "All code ClientID pkC iss1 iss2 #i #j.
+       AuthzCode_Issued(code, ClientID, pkC, iss1) @ #i
+       & AuthzCode_Redeemed(code, ClientID, pkC) @ #j
+       & Token_Issued_By_Iss(ClientID, iss2) @ #j
+       ==> iss1 = iss2"
+
+lemma ISS3_token_origin[hide_lemma=R2_dpop_requires_creation,
+   hide_lemma=B1_attestation_unforgeable,
+   hide_lemma=B2_as_requires_attestation,
+   hide_lemma=B3_token_implies_attestation,
+   hide_lemma=I1_token_requires_hardware_key]:
+    all-traces
+    "All ClientID iss #i. Token_Issued_By_Iss(ClientID, iss) @ #i
+     ==> (Ex code pkC #j. AuthzCode_Issued(code, ClientID, pkC, iss) @ #j & #j < #i)"
+
+lemma ISS4_client_rejects_wrong_iss[hide_lemma=R2_dpop_requires_creation,
+   hide_lemma=B1_attestation_unforgeable,
+   hide_lemma=B2_as_requires_attestation,
+   hide_lemma=B3_token_implies_attestation,
+   hide_lemma=I1_token_requires_hardware_key]:
+    all-traces
+    "All ClientID iss_learned iss_verified #i #j.
+       Client_Learned_Iss(ClientID, iss_learned) @ #i
+       & Client_Verified_Iss(ClientID, iss_verified) @ #j
+       & #i < #j
+       ==> iss_learned = iss_verified"
+
+lemma ISS5_refresh_preserves_iss[hide_lemma=R2_dpop_requires_creation,
+   hide_lemma=B1_attestation_unforgeable,
+   hide_lemma=B2_as_requires_attestation,
+   hide_lemma=B3_token_implies_attestation,
+   hide_lemma=I1_token_requires_hardware_key]:
+    all-traces
+    "All ClientID iss_orig token pkC #i #j.
+       Token_Issued_By_Iss(ClientID, iss_orig) @ #i
+       & RefreshToken_Used(token, ClientID, pkC) @ #j
+       & #i < #j
+       ==> (Ex code #k.
+              AuthzCode_Issued(code, ClientID, pkC, iss_orig) @ #k
+              & #k < #j)"
+
+// ============================================================================
+// F: AS FLOW
+// ============================================================================
+
+lemma F1_resource_access_requires_token_exchange:
+    all-traces
+    "All params #i.
+       AS_Request_Accepted(<'resource_access', params>) @ #i
+       ==> (Ex code #j.
+              AS_Request_Accepted(<'token_exchange', code>) @ #j
+              & #j < #i)"
+
+lemma F2_token_exchange_requires_authorization:
+    all-traces
+    "All code #i.
+       AS_Request_Accepted(<'token_exchange', code>) @ #i
+       ==> (Ex nonce #j.
+              AS_Request_Accepted(<'authorization', nonce>) @ #j
+              & #j < #i)"
+
+lemma F3_authorization_requires_challenge:
+    all-traces
+    "All nonce #i.
+       AS_Request_Accepted(<'authorization', nonce>) @ #i
+       ==> (Ex #j.
+              AS_Request_Accepted(<'challenge', nonce>) @ #j
+              & #j < #i)"
+
+// ============================================================================
+// FIDO-SPECIFIC
+// ============================================================================
+
+lemma FIDO1_authcode_after_init:
+    all-traces
+    "All code ClientID pkC iss #i. AuthzCode_Issued(code, ClientID, pkC, iss) @ #i
+     ==> (Ex rpId #j. FIDOAuth_Initiated(ClientID, rpId) @ #j & #j < #i)"
+
+lemma FIDO2_complete_after_init:
+    all-traces
+    "All ClientID #i. AS_Auth_Completed(ClientID) @ #i
+     ==> (Ex rpId #j. FIDOAuth_Initiated(ClientID, rpId) @ #j & #j < #i)"
+
+
+lemma FIDO3_fido_key_secrecy:
+    all-traces
+    "All ClientID k #i. Secret_FIDOKey(ClientID, k) @ #i
+     ==> not (Ex #j. K(k) @ #j)
+         | (Ex #r. RevealFIDO(ClientID) @ #r)"
+
+lemma FIDO4_credential_required_for_auth:
+    all-traces
+    "All ClientID rpId #i. FIDO_Auth_Success(ClientID, rpId) @ #i
+     ==> (Ex skFIDO #j. Secret_FIDOKey(ClientID, skFIDO) @ #j)
+         | (Ex #j. RevealFIDO(ClientID) @ #j)"
+
+lemma FIDO5_origin_binding:
+    all-traces
+    "All ClientID rpId #i. FIDO_Auth_Success(ClientID, rpId) @ #i
+     ==> (Ex skFIDO #j. Secret_FIDOKey(ClientID, skFIDO) @ #j & #j < #i)
+         | (Ex #j. RevealFIDO(ClientID) @ #j)"
+
+lemma FIDO6_auth_binds_to_attested_client:
+    all-traces
+    "All ClientID rpId #i. FIDO_Auth_Success(ClientID, rpId) @ #i
+     ==> (Ex pkC #j. AS_Accepted_Client_Key(ClientID, pkC) @ #j & #j < #i)"
+
+lemma FIDO7_credential_rpId_scoping:
+    all-traces
+    "All ClientID pkFIDO rpIdReg rpIdUse nonce #i #j.
+       FIDO_Credential_Registered(ClientID, pkFIDO, rpIdReg) @ #i
+       & FIDO_Authenticator_Signed(ClientID, rpIdUse, nonce) @ #j
+       ==> rpIdReg = rpIdUse
+           | (Ex #r. RevealFIDO(ClientID) @ #r)"
+
+lemma FIDO8_as_enforces_rpId_binding:
+    all-traces
+    "All ClientID rpId #i.
+       FIDO_Auth_Success(ClientID, rpId) @ #i
+       ==> (Ex pkFIDO #j.
+              FIDO_Credential_Registered(ClientID, pkFIDO, rpId) @ #j
+              & #j < #i)
+           | (Ex #r. RevealFIDO(ClientID) @ #r)"
+
+lemma FIDO9_fido_nonce_single_use:
+    all-traces
+    "All nonce ClientID1 ClientID2 rpId1 rpId2 #i #j.
+       AS_Issued_FIDONonce(nonce, ClientID1, rpId1) @ #i
+       & AS_Issued_FIDONonce(nonce, ClientID2, rpId2) @ #j
+       ==> #i = #j & ClientID1 = ClientID2 & rpId1 = rpId2"
+
+end
