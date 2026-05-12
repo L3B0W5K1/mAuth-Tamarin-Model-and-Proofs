@@ -1,4 +1,4 @@
-theory mAuth_Scenario2_ROPC begin
+theory mAuth_ROPC begin
 
 // Function signature and definition of the equational theory E
 
